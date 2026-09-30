@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.ipynb_checkpoints/
+.pytest_cache/
+# Dados extraídos e baixados
+data/polish_bankruptcy/
+data/*.zip
+# Sistemas e editor
+.DS_Store
+.vscode/
