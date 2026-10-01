@@ -65,3 +65,5 @@ Expected Loss / VaR / CVaR
    ↓
 Dashboard Streamlit
 
+![Visão Executiva](assets/dashboard_visao_executiva.png)
+
