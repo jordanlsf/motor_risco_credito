@@ -18,9 +18,9 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import (
-    roc_auc_score, roc_curve, average_precision_score,
-    brier_score_loss, log_loss,
+    roc_auc_score, average_precision_score, brier_score_loss, log_loss,
 )
+from .risk_metrics import ks_from_scores, ece_score, psi_score
 
 SEED = 42
 
@@ -43,36 +43,10 @@ class Winsorizer(BaseEstimator, TransformerMixin):
         return np.clip(arr, self.lo_, self.hi_)
 
 
-def ks_from_scores(y, p):
-    fpr, tpr, _ = roc_curve(y, p)
-    return float(np.max(tpr - fpr))
 
 
-def ece_score(y, p, bins=10):
-    tmp = pd.DataFrame({"y": np.asarray(y), "p": np.asarray(p)})
-    try:
-        tmp["bin"] = pd.qcut(tmp["p"], q=bins, duplicates="drop")
-    except Exception:
-        return np.nan
-    g = tmp.groupby("bin", observed=True).agg(
-        n=("y", "size"), obs=("y", "mean"), pred=("p", "mean")
-    )
-    return float(np.sum((g["n"] / len(tmp)) * np.abs(g["obs"] - g["pred"])))
 
 
-def psi_score(expected, actual, bins=10):
-    e = np.asarray(expected, float)
-    a = np.asarray(actual, float)
-    edges = np.unique(np.quantile(e, np.linspace(0, 1, bins + 1)))
-    if len(edges) < 3:
-        return np.nan
-    edges[0] = -np.inf
-    edges[-1] = np.inf
-    eh, _ = np.histogram(e, bins=edges)
-    ah, _ = np.histogram(a, bins=edges)
-    ep = np.clip(eh / eh.sum(), 1e-6, None)
-    ap = np.clip(ah / ah.sum(), 1e-6, None)
-    return float(np.sum((ap - ep) * np.log(ap / ep)))
 
 
 @st.cache_resource(show_spinner="Treinando e calibrando modelos de PD...")
