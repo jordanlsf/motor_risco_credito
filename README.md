@@ -1,42 +1,67 @@
-# Motor Quantitativo de Risco de Crédito e Contraparte
+## Status de Validação da V3.1
 
-### Credit Risk Engine | PD · EAD · LGD
+A versão V3.1 foi validada funcionalmente em ambiente Google Colab, com execução a partir do repositório GitHub.
 
-Motor quantitativo desenvolvido em Python para análise de risco de crédito bancário e contraparte, integrando modelagem estatística, ciência de dados e simulação de cenários.
+Foram testados com sucesso:
 
-## Objetivo
+- carregamento dos dados públicos da UCI;
+- treinamento dos modelos de PD;
+- comparação entre Regressão Logística, Random Forest e Gradient Boosting;
+- métricas de discriminação e calibração;
+- simulação de EAD e PFE;
+- Expected Loss;
+- Credit VaR e CVaR;
+- Wrong-Way Risk;
+- dashboard Streamlit;
+- navegação completa entre as páginas do aplicativo.
 
-Estimar a perda esperada a partir da integração dos componentes:
+No horizonte experimental de 12 meses, o Gradient Boosting apresentou o melhor desempenho no holdout estratificado utilizado no protótipo, com:
 
-- **PD (Probability of Default):** probabilidade de inadimplência.
-- **EAD (Exposure at Default):** exposição financeira no momento do default.
-- **LGD (Loss Given Default):** percentual de perda após a inadimplência, considerando possíveis recuperações.
+- ROC-AUC: 0,9617
+- Gini: 0,9235
+- PR-AUC: 0,7796
+- KS: 0,8141
+- Brier Score: 0,0300
+- ECE: 0,0096
 
-### Modelo de Perda Esperada
+Os resultados devem ser interpretados como evidência experimental fora da amostra e não como validação regulatória ou aprovação para uso em produção.
+## Teste de Wrong-Way Risk
 
-**EL = PD × EAD × LGD**
+Foi realizado um teste de consistência com:
 
-## ## Metodologia e Aplicabilidade
+- PD = 5%
+- LGD = 45%
+- EAD = R$ 50 milhões
+- volatilidade da exposição = 30%
 
-O motor foi desenvolvido a partir da integração de três componentes fundamentais da modelagem quantitativa de risco de crédito: PD (Probability of Default), EAD (Exposure at Default) e LGD (Loss Given Default).
+Sem Wrong-Way Risk, a perda esperada simulada ficou próxima da perda esperada teórica:
 
-O componente de PD utiliza dados públicos do *UCI Machine Learning Repository* para experimentação e desenvolvimento estatístico. Os componentes de EAD e LGD são explorados inicialmente por meio de hipóteses e cenários simulados.
+EL = PD × LGD × EAD = R$ 1,125 milhão
 
-Sua arquitetura modular permite adaptar as metodologias a diferentes segmentos econômicos, destacando-se:
+Com dependência positiva entre exposição e risco de default, o motor apresentou aumento aproximado de:
 
-- **Instituições financeiras:** avaliação do risco de crédito de clientes e empresas, estimativa de perdas esperadas e suporte à gestão de carteiras.
-- **Setor elétrico:** avaliação de contrapartes em contratos de comercialização de energia e monitoramento de exposições financeiras.
-- **Empresas não financeiras:** análise do risco de clientes corporativos, concentração de recebíveis e definição de políticas de crédito.
-- **Fundos e instituições de investimento:** avaliação de exposição a emissores e contrapartes, análise de cenários e mensuração de perdas potenciais.
+- 21,7% na Expected Loss;
+- 20,1% no Credit CVaR 99%.
 
-O objetivo é demonstrar como a integração entre Estatística, Ciência de Dados e modelagem financeira pode transformar informações em instrumentos quantitativos de suporte à tomada de decisão, independentemente do setor de aplicação.
+O teste demonstra como a dependência entre exposição e deterioração de crédito pode aumentar as perdas mesmo quando a PD média permanece praticamente estável.
 
-*O projeto possui caráter experimental. Sua utilização em ambientes reais exige calibração, validação e adequação às características da carteira e aos requisitos regulatórios aplicáveis.*
-
-## Tecnologias e Competências
-
-- **Linguagem:** Python
-- **Métodos quantitativos:** Estatística e Machine Learning
-- **Modelagem financeira:** PD, EAD, LGD e Expected Loss
-- **Aplicações:** Modelagem de Risco, Simulação e Ciência de Dados
+Dados UCI
+   ↓
+Data Loader
+   ↓
+Modelos de PD
+   ↓
+Calibração e Model Health
+   ↓
+PD da contraparte
+   ↓
+EAD / LGD / PFE
+   ↓
+Monte Carlo
+   ↓
+Wrong-Way Risk
+   ↓
+Expected Loss / VaR / CVaR
+   ↓
+Dashboard Streamlit
 
