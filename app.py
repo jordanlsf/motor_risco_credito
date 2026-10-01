@@ -1,33 +1,28 @@
 # -*- coding: utf-8 -*-
-"""Interface Streamlit extraída da V3. Cálculos preservados na Etapa 2."""
+"""Dashboard modular do Motor de Risco de Crédito — versão experimental V3.1.
 
-import os
-import math
-import json
+Métricas e fórmulas originais preservadas; arquivos de dados preparados com
+python prepare_data.py antes de executar python -m streamlit run app.py.
+"""
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-
-from scipy.io import arff
-from scipy.special import expit, logit
 from scipy.stats import norm
-
-from sklearn.base import BaseEstimator, TransformerMixin, clone
-from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import RobustScaler
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
-from sklearn.calibration import CalibratedClassifierCV, calibration_curve
+from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
-    roc_auc_score, roc_curve, average_precision_score, precision_recall_curve,
-    brier_score_loss, log_loss, confusion_matrix, precision_score,
-    recall_score, f1_score, accuracy_score
+    roc_curve, confusion_matrix, precision_score, recall_score,
+    f1_score, accuracy_score,
 )
-from sklearn.inspection import permutation_importance
+
+from src.data_loader import load_arff
+from src.pd_model import train_models
+from src.credit_simulation import simulate_credit
+from src.risk_metrics import (
+    metric_status_auc, metric_status_bss, metric_status_calratio,
+    metric_status_psi, metric_status_missing, health_summary,
+)
 
 # ============================================================
 # CONFIGURAÇÃO
@@ -39,7 +34,6 @@ st.set_page_config(
     layout="wide"
 )
 
-DATA_DIR = str(__import__("pathlib").Path(__file__).resolve().parent / "data" / "polish_bankruptcy")
 SEED = 42
 N_DEMO_CP = 120
 N_CREDIT_SIM = 60000
@@ -189,206 +183,32 @@ def color_status(s):
 # LEITURA DA BASE
 # ============================================================
 
-@st.cache_data
-def load_arff(horizon_months=12):
-    # Nomenclatura do UCI é invertida em relação ao horizonte:
-    # 5year.arff -> default em ~1 ano; 4year -> ~2 anos; ...
-    file_map = {12:"5year.arff", 24:"4year.arff", 36:"3year.arff", 48:"2year.arff", 60:"1year.arff"}
-    fp = os.path.join(DATA_DIR, file_map[horizon_months])
-    data, _ = arff.loadarff(fp)
-    df = pd.DataFrame(data)
-    for c in [x for x in df.columns if x.startswith("Attr")]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df["class"] = df["class"].apply(lambda v: int(v.decode()) if isinstance(v, (bytes, bytearray)) else int(v))
-    return df, file_map[horizon_months]
 
 
-class Winsorizer(BaseEstimator, TransformerMixin):
-    def __init__(self, low=0.005, high=0.995):
-        self.low = low
-        self.high = high
-    def fit(self, X, y=None):
-        arr = np.asarray(X, dtype=float)
-        self.lo_ = np.nanquantile(arr, self.low, axis=0)
-        self.hi_ = np.nanquantile(arr, self.high, axis=0)
-        return self
-    def transform(self, X):
-        arr = np.asarray(X, dtype=float)
-        return np.clip(arr, self.lo_, self.hi_)
 
 
-def ks_from_scores(y, p):
-    fpr, tpr, _ = roc_curve(y, p)
-    return float(np.max(tpr - fpr))
 
 
-def ece_score(y, p, bins=10):
-    tmp = pd.DataFrame({"y":np.asarray(y), "p":np.asarray(p)})
-    try:
-        tmp["bin"] = pd.qcut(tmp["p"], q=bins, duplicates="drop")
-    except Exception:
-        return np.nan
-    g = tmp.groupby("bin", observed=True).agg(n=("y","size"), obs=("y","mean"), pred=("p","mean"))
-    return float(np.sum((g["n"]/len(tmp)) * np.abs(g["obs"]-g["pred"])))
 
 
-def psi_score(expected, actual, bins=10):
-    e = np.asarray(expected, float)
-    a = np.asarray(actual, float)
-    edges = np.unique(np.quantile(e, np.linspace(0, 1, bins+1)))
-    if len(edges) < 3:
-        return np.nan
-    edges[0] = -np.inf
-    edges[-1] = np.inf
-    eh, _ = np.histogram(e, bins=edges)
-    ah, _ = np.histogram(a, bins=edges)
-    ep = np.clip(eh/eh.sum(), 1e-6, None)
-    ap = np.clip(ah/ah.sum(), 1e-6, None)
-    return float(np.sum((ap-ep)*np.log(ap/ep)))
 
 
-def metric_status_auc(x):
-    return "Verde" if x >= .75 else ("Amarelo" if x >= .65 else "Vermelho")
 
 
-def metric_status_bss(x):
-    return "Verde" if x >= .10 else ("Amarelo" if x > 0 else "Vermelho")
 
 
-def metric_status_calratio(x):
-    return "Verde" if .80 <= x <= 1.20 else ("Amarelo" if .60 <= x <= 1.40 else "Vermelho")
 
 
-def metric_status_psi(x):
-    if not np.isfinite(x): return "Amarelo"
-    return "Verde" if x < .10 else ("Amarelo" if x < .25 else "Vermelho")
 
 
-def metric_status_missing(max_missing):
-    return "Verde" if max_missing < .10 else ("Amarelo" if max_missing < .30 else "Vermelho")
 
 
-def health_summary(statuses):
-    if "Vermelho" in statuses:
-        return "REQUER ATENÇÃO", "Vermelho"
-    if "Amarelo" in statuses:
-        return "ADEQUADO COM MONITORAMENTO", "Amarelo"
-    return "VALIDAÇÃO FORA DA AMOSTRA FAVORÁVEL", "Verde"
 
 
 # ============================================================
 # TREINO DOS MODELOS
 # ============================================================
 
-@st.cache_resource(show_spinner="Treinando e calibrando modelos de PD...")
-def train_models(df, drop_attr37=True):
-    features = [c for c in df.columns if c.startswith("Attr")]
-    if drop_attr37 and "Attr37" in features:
-        features.remove("Attr37")
-
-    X = df[features].copy()
-    X["MissingCount"] = X.isna().sum(axis=1).astype(float)
-    features2 = list(X.columns)
-    y = df["class"].astype(int)
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=.30, stratify=y, random_state=SEED
-    )
-
-    preprocess_basic = [
-        ("winsor", Winsorizer(.005, .995)),
-        ("imputer", SimpleImputer(strategy="median")),
-    ]
-
-    candidates = {
-        "Regressão Logística": Pipeline(preprocess_basic + [
-            ("scale", RobustScaler()),
-            ("model", LogisticRegression(
-                max_iter=3000, class_weight="balanced", C=0.6,
-                solver="liblinear", random_state=SEED
-            ))
-        ]),
-        "Random Forest": Pipeline(preprocess_basic + [
-            ("model", RandomForestClassifier(
-                n_estimators=320, max_depth=9, min_samples_leaf=5,
-                class_weight="balanced_subsample", n_jobs=-1,
-                random_state=SEED
-            ))
-        ]),
-        "Gradient Boosting": Pipeline(preprocess_basic + [
-            ("model", HistGradientBoostingClassifier(
-                max_iter=220, learning_rate=.06, max_leaf_nodes=25,
-                min_samples_leaf=18, l2_regularization=.5,
-                class_weight="balanced", random_state=SEED
-            ))
-        ]),
-    }
-
-    models = {}
-    rows = []
-    preds = {}
-    base_rate_train = float(y_train.mean())
-    base_rate_test = float(y_test.mean())
-    naive_test = np.repeat(base_rate_train, len(y_test))
-    brier_naive = brier_score_loss(y_test, naive_test)
-
-    for name, base in candidates.items():
-        calibrated = CalibratedClassifierCV(
-            estimator=base, method="sigmoid", cv=3, n_jobs=-1
-        )
-        calibrated.fit(X_train, y_train)
-        p_test = calibrated.predict_proba(X_test)[:,1]
-        p_train = calibrated.predict_proba(X_train)[:,1]
-
-        auc = roc_auc_score(y_test, p_test)
-        ap = average_precision_score(y_test, p_test)
-        brier = brier_score_loss(y_test, p_test)
-        bss = 1 - brier/brier_naive
-        ks = ks_from_scores(y_test, p_test)
-        ece = ece_score(y_test, p_test)
-        cal_ratio = float(np.mean(p_test) / max(base_rate_test, 1e-12))
-        psi = psi_score(p_train, p_test)
-        ll = log_loss(y_test, np.clip(p_test, 1e-8, 1-1e-8))
-
-        models[name] = calibrated
-        preds[name] = {"train":p_train, "test":p_test}
-        rows.append({
-            "Modelo": name,
-            "ROC-AUC": auc,
-            "Gini": 2*auc-1,
-            "PR-AUC": ap,
-            "KS": ks,
-            "Brier": brier,
-            "Brier Skill": bss,
-            "ECE": ece,
-            "Calibração (Prev/Obs)": cal_ratio,
-            "PSI treino-teste": psi,
-            "LogLoss": ll,
-        })
-
-    metrics = pd.DataFrame(rows).set_index("Modelo")
-
-    eligible = metrics[metrics["ROC-AUC"] >= .65]
-    if len(eligible):
-        suggested = eligible["Brier"].idxmin()
-    else:
-        suggested = metrics["ROC-AUC"].idxmax()
-
-    return {
-        "features": features2,
-        "X": X,
-        "y": y,
-        "X_train": X_train,
-        "X_test": X_test,
-        "y_train": y_train,
-        "y_test": y_test,
-        "models": models,
-        "preds": preds,
-        "metrics": metrics,
-        "suggested": suggested,
-        "base_rate_train": base_rate_train,
-        "base_rate_test": base_rate_test,
-    }
 
 
 # ============================================================
@@ -440,57 +260,6 @@ def portfolio_concentration(port):
 # SIMULAÇÃO EAD/PFE/CREDIT LOSS
 # ============================================================
 
-@st.cache_data(show_spinner="Simulando perda de crédito...")
-def simulate_credit(pd0, lgd, ead_net, sigma_exp, beta_wwr, n=N_CREDIT_SIM, seed=SEED):
-    rng = np.random.default_rng(seed)
-    z = rng.normal(size=n)
-    exposure = np.maximum(ead_net, 0) * np.exp(-.5*sigma_exp**2 + sigma_exp*z)
-
-    pd0 = float(np.clip(pd0, 1e-6, 1-1e-6))
-
-    # Wrong-Way Risk deve representar dependência entre exposição e crédito,
-    # sem inflar mecanicamente a PD média-base. Ajustamos um intercepto para
-    # manter E[PD_s] aproximadamente igual a pd0 na própria amostra simulada.
-    if abs(float(beta_wwr)) < 1e-12:
-        scenario_pd = np.full(n, pd0, dtype=float)
-    else:
-        base_logit = logit(pd0)
-        lo, hi = -20.0, 20.0
-        for _ in range(70):
-            mid = 0.5*(lo+hi)
-            mean_pd = float(np.mean(expit(base_logit + mid + beta_wwr*z)))
-            if mean_pd > pd0:
-                hi = mid
-            else:
-                lo = mid
-        intercept_shift = 0.5*(lo+hi)
-        scenario_pd = expit(base_logit + intercept_shift + beta_wwr*z)
-
-    default = rng.uniform(size=n) < scenario_pd
-    loss = default.astype(float) * float(lgd) * exposure
-
-    def tail_metrics(x, alpha):
-        x = np.asarray(x, float)
-        var = float(np.quantile(x, alpha, method="higher"))
-        k = max(1, int(np.ceil((1-alpha)*len(x))))
-        cvar = float(np.mean(np.sort(x)[-k:]))
-        return var, cvar
-
-    v95, c95 = tail_metrics(loss, .95)
-    v99, c99 = tail_metrics(loss, .99)
-    return {
-        "exposure": exposure,
-        "loss": loss,
-        "scenario_pd": scenario_pd,
-        "PFE95": float(np.quantile(exposure,.95)),
-        "PFE99": float(np.quantile(exposure,.99)),
-        "EL": float(loss.mean()),
-        "DefaultFreq": float(default.mean()),
-        "CreditVaR95": v95,
-        "CreditCVaR95": c95,
-        "CreditVaR99": v99,
-        "CreditCVaR99": c99,
-    }
 
 
 # ============================================================
